@@ -1,4 +1,5 @@
 package main
+
 import (
 	"encoding/base64"
 	"encoding/json"
@@ -6,58 +7,65 @@ import (
 	"os"
 	"strings"
 )
+
 type Config struct {
-	Token        string `json:"token"`
-	DiscordToken string `json:"discordToken"`
-	Password     string `json:"password"`
-	GuildID      string `json:"guildId"`
-	DiscordHost  string `json:"discordHost"`
-	APIVersion   string `json:"apiVersion"`
-	OS           string `json:"os"`
-	Browser      string `json:"browser"`
-	Device       string `json:"device"`
-	SalvoSize    int    `json:"salvoSize"`
+	Token           string `json:"token"`
+	DiscordToken    string `json:"discordToken"`
+	Password        string `json:"password"`
+	GuildID         string `json:"guildId"`
+	DiscordHost     string `json:"discordHost"`
+	APIVersion      string `json:"apiVersion"`
+	OS              string `json:"os"`
+	Browser         string `json:"browser"`
+	Device          string `json:"device"`
+	SalvoSize       int    `json:"salvoSize"`
+	SnipeCooldownMs int    `json:"snipeCooldownMs"`
 }
+
 func (c *Config) GetToken() string {
 	if c.Token != "" {
 		return c.Token
 	}
 	return c.DiscordToken
 }
+
 func (c *Config) GetHost() string {
 	if c.DiscordHost != "" {
 		return c.DiscordHost
 	}
 	return "canary.discord.com"
 }
+
 func (c *Config) GetAPIVersion() string {
 	if c.APIVersion != "" {
 		return c.APIVersion
 	}
 	return "v9"
 }
+
 func (c *Config) UserAgent() string {
 	return "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0"
 }
+
 func (c *Config) BuildSuperProperties() string {
-	if cachedSuperProperties != "" {
-		return cachedSuperProperties
+	if cachedProps != "" {
+		return cachedProps
 	}
-	releaseChannel := "stable"
+	rel := "stable"
 	if strings.HasPrefix(c.GetHost(), "canary") {
-		releaseChannel = "canary"
+		rel = "canary"
 	}
-	osName := c.OS
-	if osName == "" {
-		osName = "Windows"
+	sys := c.OS
+	if sys == "" {
+		sys = "Windows"
 	}
-	browserName := c.Browser
-	if browserName == "" {
-		browserName = "Firefox"
+	br := c.Browser
+	if br == "" {
+		br = "Firefox"
 	}
-	props := map[string]interface{}{
-		"os":                       osName,
-		"browser":                  browserName,
+	m := map[string]interface{}{
+		"os":                       sys,
+		"browser":                  br,
 		"device":                   c.Device,
 		"system_locale":            "en-US",
 		"browser_user_agent":       c.UserAgent(),
@@ -68,32 +76,34 @@ func (c *Config) BuildSuperProperties() string {
 		"search_engine":            "google",
 		"referrer_current":         "",
 		"referring_domain_current": "",
-		"release_channel":          releaseChannel,
+		"release_channel":          rel,
 		"client_build_number":      356140,
 		"client_event_source":      nil,
 		"has_client_mods":          false,
 	}
-	data, _ := json.Marshal(props)
-	cachedSuperProperties = base64.StdEncoding.EncodeToString(data)
-	return cachedSuperProperties
+	b, _ := json.Marshal(m)
+	cachedProps = base64.StdEncoding.EncodeToString(b)
+	return cachedProps
 }
-func loadConfigFile(path string) bool {
-	data, err := os.ReadFile(path)
+
+func loadConfigFile(fn string) bool {
+	b, err := os.ReadFile(fn)
 	if err != nil {
-		fmt.Printf("[MFA ERROR] Failed to read %s: %v\n", path, err)
+		fmt.Printf("[MFA ERROR] Failed to read %s: %v\n", fn, err)
 		return false
 	}
-	if err := json.Unmarshal(data, &config); err != nil {
-		fmt.Printf("[MFA ERROR] Failed to parse %s: %v\n", path, err)
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		fmt.Printf("[MFA ERROR] Failed to parse %s: %v\n", fn, err)
 		return false
 	}
-	cachedSuperProperties = ""
+	cachedProps = ""
 	loadCachedMfaToken()
 	rebuildHotCache()
 	return true
 }
+
 func loadCachedMfaToken() {
-	if data, err := os.ReadFile("mfa.txt"); err == nil && len(data) > 0 {
-		cachedMfaToken = strings.TrimSpace(string(data))
+	if b, err := os.ReadFile("mfa.txt"); err == nil && len(b) > 0 {
+		cachedMFA = strings.TrimSpace(string(b))
 	}
 }

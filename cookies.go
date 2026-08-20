@@ -1,36 +1,41 @@
 package main
+
 import (
 	"strings"
 	"sync"
+
 	"github.com/valyala/fasthttp"
 )
+
 var (
-	cookieMu    sync.Mutex
-	cookieStore = make(map[string]string)
+	cmu sync.Mutex
+	jar = make(map[string]string)
 )
-func absorbCookies(resp *fasthttp.Response) {
-	cookieMu.Lock()
-	defer cookieMu.Unlock()
-	resp.Header.VisitAllCookie(func(key, value []byte) {
+
+func absorbCookies(res *fasthttp.Response) {
+	cmu.Lock()
+	defer cmu.Unlock()
+	res.Header.VisitAllCookie(func(k, v []byte) {
 		c := fasthttp.AcquireCookie()
-		c.ParseBytes(value)
-		k := string(c.Key())
-		v := string(c.Value())
+		c.ParseBytes(v)
+		key := string(c.Key())
+		val := string(c.Value())
 		fasthttp.ReleaseCookie(c)
-		if k != "" {
-			cookieStore[k] = v
+		if key != "" {
+			jar[key] = val
 		}
 	})
 }
+
 func getCookieHeader() string {
-	cookieMu.Lock()
-	defer cookieMu.Unlock()
-	if len(cookieStore) == 0 {
+	cmu.Lock()
+	defer cmu.Unlock()
+	if len(jar) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	first := true
-	for k, v := range cookieStore {
+	for k, v := range jar {
 		if !first {
 			b.WriteString("; ")
 		}

@@ -11,100 +11,85 @@ import (
 )
 
 var (
-	hotURL        []byte
-	hotReferer    []byte
-	hotOrigin     []byte
-	hotToken      []byte
-	hotSuperProp  []byte
-	hotUserAgent  []byte
-	hotClientAddr string
+	hotURL, hotRef, hotOrigin, hotTok, hotProp, hotUA []byte
+	hotAddr                                           string
 )
 
 var (
-	hkMethod          = []byte("PATCH")
-	hkAuthorization   = []byte("Authorization")
-	hkUserAgent       = []byte("User-Agent")
-	hkXSuperProps     = []byte("X-Super-Properties")
-	hkContentType     = []byte("Content-Type")
-	hkAcceptEncoding  = []byte("Accept-Encoding")
-	hkOrigin          = []byte("Origin")
-	hkReferer         = []byte("Referer")
-	hkMFAAuth         = []byte("X-Discord-MFA-Authorization")
-	hkCookie          = []byte("Cookie")
-	hvContentType    = []byte("application/json")
-	hvAcceptEncoding = []byte("identity")
+	kMethod = []byte("PATCH")
+	kAuth   = []byte("Authorization")
+	kUA     = []byte("User-Agent")
+	kProps  = []byte("X-Super-Properties")
+	kCT     = []byte("Content-Type")
+	kAE     = []byte("Accept-Encoding")
+	kOrigin = []byte("Origin")
+	kRef    = []byte("Referer")
+	kMFA    = []byte("X-Discord-MFA-Authorization")
+	kCookie = []byte("Cookie")
+	vCT     = []byte("application/json")
+	vAE     = []byte("identity")
 )
 
-var bodyBuf [64]byte
-
-// buildBody writes {"code":"<vanity>"} into bodyBuf and returns the byte slice.
-func buildBody(vanity string) []byte {
-	n := copy(bodyBuf[:], `{"code":"`)
-	n += copy(bodyBuf[n:], vanity)
-	n += copy(bodyBuf[n:], `"}`)
-	return bodyBuf[:n]
+func buildBody(code string) []byte {
+	return []byte(`{"code":"` + code + `"}`)
 }
 
-// rebuildHotCache pre-computes static request bytes and refreshes the HostClient.
 func rebuildHotCache() {
-	host := config.GetHost()
-	apiVer := config.GetAPIVersion()
-	guildID := config.GuildID
-	if guildID == "" {
-		guildID = "1539670174221864963"
+	h := cfg.GetHost()
+	ver := cfg.GetAPIVersion()
+	gid := cfg.GuildID
+	if gid == "" {
+		gid = "1539670174221864963"
 	}
 
-	hotURL = []byte(fmt.Sprintf("https://%s/api/%s/guilds/%s/vanity-url", host, apiVer, guildID))
-	hotReferer = []byte(fmt.Sprintf("https://%s/channels/%s", host, guildID))
-	hotOrigin = []byte("https://" + host)
-	hotToken = []byte(config.GetToken())
-	hotSuperProp = []byte(config.BuildSuperProperties())
-	hotUserAgent = []byte(config.UserAgent())
+	hotURL = []byte(fmt.Sprintf("https://%s/api/%s/guilds/%s/vanity-url", h, ver, gid))
+	hotRef = []byte(fmt.Sprintf("https://%s/channels/%s", h, gid))
+	hotOrigin = []byte("https://" + h)
+	hotTok = []byte(cfg.GetToken())
+	hotProp = []byte(cfg.BuildSuperProperties())
+	hotUA = []byte(cfg.UserAgent())
 
-	initHostClient(host)
+	initHostClient(h)
 }
 
-// initHostClient initializes the fasthttp HostClient for the given host.
-func initHostClient(host string) {
-	newAddr := host + ":443"
-	if hostClient != nil && hotClientAddr == newAddr {
+func initHostClient(h string) {
+	addr := h + ":443"
+	if hc != nil && hotAddr == addr {
 		return
 	}
-	hotClientAddr = newAddr
+	hotAddr = addr
 
-	tlsCfg := &tls.Config{
-		InsecureSkipVerify:     true,
-		SessionTicketsDisabled: false,
-		ClientSessionCache:     tls.NewLRUClientSessionCache(1000),
-		NextProtos:             []string{"http/1.1"},
-		MinVersion:             tls.VersionTLS13,
-		MaxVersion:             tls.VersionTLS13,
+	tcfg := &tls.Config{
+		ClientSessionCache: tls.NewLRUClientSessionCache(1000),
+		NextProtos:         []string{"http/1.1"},
+		MinVersion:         tls.VersionTLS13,
+		MaxVersion:         tls.VersionTLS13,
 	}
 
-	dialFn := func(addr string) (net.Conn, error) {
+	dial := func(a string) (net.Conn, error) {
 		d := &net.Dialer{
 			Timeout:   2 * time.Second,
 			KeepAlive: 15 * time.Second,
 		}
-		conn, err := d.Dial("tcp", addr)
+		c, err := d.Dial("tcp", a)
 		if err != nil {
 			return nil, err
 		}
-		if tc, ok := conn.(*net.TCPConn); ok {
+		if tc, ok := c.(*net.TCPConn); ok {
 			_ = tc.SetNoDelay(true)
 			_ = tc.SetKeepAlive(true)
 			_ = tc.SetKeepAlivePeriod(15 * time.Second)
 			_ = tc.SetReadBuffer(256 * 1024)
 			_ = tc.SetWriteBuffer(256 * 1024)
 		}
-		return conn, nil
+		return c, nil
 	}
 
-	hostClient = &fasthttp.HostClient{
-		Addr:                          host + ":443",
+	hc = &fasthttp.HostClient{
+		Addr:                          addr,
 		IsTLS:                         true,
-		TLSConfig:                     tlsCfg,
-		Dial:                          dialFn,
+		TLSConfig:                     tcfg,
+		Dial:                          dial,
 		MaxConns:                      2000,
 		MaxIdleConnDuration:           1200 * time.Second,
 		ReadTimeout:                   2 * time.Second,
@@ -114,11 +99,10 @@ func initHostClient(host string) {
 	}
 }
 
-// preWarmConns warms up active pool connections in parallel.
-func preWarmConns(count int) {
+func preWarmConns(n int) {
 	var wg sync.WaitGroup
-	wg.Add(count)
-	for i := 0; i < count; i++ {
+	wg.Add(n)
+	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
 			warmWithHostClient()
@@ -127,18 +111,17 @@ func preWarmConns(count int) {
 	wg.Wait()
 }
 
-// warmWithHostClient sends a pre-heating GET request over the hostClient.
 func warmWithHostClient() {
-	if hostClient == nil {
+	if hc == nil {
 		return
 	}
 	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
+	res := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	defer fasthttp.ReleaseResponse(res)
 
 	req.Header.SetMethodBytes([]byte("GET"))
-	req.SetRequestURI(fmt.Sprintf("https://%s/api/v9/gateway", config.GetHost()))
-	_ = hostClient.Do(req, resp)
-	resp.ResetBody()
+	req.SetRequestURI(fmt.Sprintf("https://%s/api/v9/gateway", cfg.GetHost()))
+	_ = hc.Do(req, res)
+	res.ResetBody()
 }

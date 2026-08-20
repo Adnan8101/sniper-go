@@ -1,8 +1,10 @@
 package main
+
 import "github.com/valyala/fasthttp"
+
 var (
-	config                Config
-	cachedSuperProperties string
-	cachedMfaToken        string
-	hostClient            *fasthttp.HostClient
+	cfg         Config
+	cachedProps string
+	cachedMFA   string
+	hc          *fasthttp.HostClient
 )

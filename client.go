@@ -1,17 +1,19 @@
 package main
+
 import (
 	"runtime"
 	"time"
 )
+
 func startConnectionKeepAlive() {
-	salvo := config.SalvoSize
-	if salvo <= 0 {
-		salvo = 2
+	n := cfg.SalvoSize
+	if n <= 0 {
+		n = 2
 	}
-	preWarmConns(salvo)
+	preWarmConns(n)
 	go func() {
-		ticker := time.NewTicker(3 * time.Second)
-		for range ticker.C {
+		tk := time.NewTicker(3 * time.Second)
+		for range tk.C {
 			preWarmConns(1)
 			runtime.GC()
 		}

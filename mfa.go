@@ -32,144 +32,143 @@ type VanityResponse struct {
 	Ticket string `json:"ticket"`
 }
 
-func setCommonHeaders(req *fasthttp.Request, token string, path string) {
-	host := config.GetHost()
-	req.Header.Set("Authorization", token)
-	req.Header.Set("User-Agent", config.UserAgent())
-	req.Header.Set("X-Super-Properties", config.BuildSuperProperties())
+func setCommonHeaders(req *fasthttp.Request, tok, p string) {
+	h := cfg.GetHost()
+	req.Header.Set("Authorization", tok)
+	req.Header.Set("User-Agent", cfg.UserAgent())
+	req.Header.Set("X-Super-Properties", cfg.BuildSuperProperties())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept-Encoding", "identity")
-	req.Header.Set("Origin", "https://"+host)
-	req.Header.Set("Referer", "https://"+host+path)
-	if ch := getCookieHeader(); ch != "" {
-		req.Header.Set("Cookie", ch)
+	req.Header.Set("Origin", "https://"+h)
+	req.Header.Set("Referer", "https://"+h+p)
+	if s := getCookieHeader(); s != "" {
+		req.Header.Set("Cookie", s)
 	}
 }
 
-func writeMFATokenToFile(token string) {
-	cachedMfaToken = token
-	if err := os.WriteFile("mfa.txt", []byte(token), 0644); err != nil {
+func writeMFATokenToFile(tok string) {
+	cachedMFA = tok
+	if err := os.WriteFile("mfa.txt", []byte(tok), 0644); err != nil {
 		fmt.Println("[MFA ERROR] Failed to write MFA token to file:", err)
 		return
 	}
-	now := time.Now().Format("15:04:05")
-	display := token
-	if len(token) > 16 {
-		display = token[:8] + "..." + token[len(token)-8:]
+	ts := time.Now().Format("15:04:05")
+	s := tok
+	if len(tok) > 16 {
+		s = tok[:8] + "..." + tok[len(tok)-8:]
 	}
-	fmt.Printf("\x1b[32m[MFA - %s] MFA solved via password & saved to mfa.txt: %s\x1b[0m\n", now, display)
+	fmt.Printf("\x1b[32m[MFA - %s] MFA solved via password & saved to mfa.txt: %s\x1b[0m\n", ts, s)
 }
 
-func sendMFA(token, ticket, password string) string {
-	payload := MFAPayload{Ticket: ticket, MFAType: "password", Data: password}
-	jsonPayload, _ := json.Marshal(payload)
+func sendMFA(tok, ticket, pass string) string {
+	b, _ := json.Marshal(MFAPayload{Ticket: ticket, MFAType: "password", Data: pass})
 
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
+	res := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(res)
 
-	host := config.GetHost()
-	apiVer := config.GetAPIVersion()
-	req.SetRequestURI(fmt.Sprintf("https://%s/api/%s/mfa/finish", host, apiVer))
+	h := cfg.GetHost()
+	ver := cfg.GetAPIVersion()
+	req.SetRequestURI(fmt.Sprintf("https://%s/api/%s/mfa/finish", h, ver))
 	req.Header.SetMethod("POST")
-	setCommonHeaders(req, token, "/login")
-	req.SetBody(jsonPayload)
+	setCommonHeaders(req, tok, "/login")
+	req.SetBody(b)
 
-	if err := hostClient.Do(req, resp); err != nil {
+	if err := hc.Do(req, res); err != nil {
 		fmt.Printf("[MFA ERROR] Failed to send MFA solve request: %v\n", err)
 		return "err"
 	}
 
-	absorbCookies(resp)
-	body := resp.Body()
+	absorbCookies(res)
+	raw := res.Body()
 
-	var mfaResp MFAResponse
-	if err := json.Unmarshal(body, &mfaResp); err == nil {
-		if mfaResp.Token != "" {
-			writeMFATokenToFile(mfaResp.Token)
-			return mfaResp.Token
+	var r MFAResponse
+	if err := json.Unmarshal(raw, &r); err == nil {
+		if r.Token != "" {
+			writeMFATokenToFile(r.Token)
+			return r.Token
 		}
-		if mfaResp.Code != 0 || mfaResp.Message != "" {
-			fmt.Printf("[MFA ERROR] MFA finish failed (code %d): %s\n", mfaResp.Code, mfaResp.Message)
-			if mfaResp.Code == 60008 {
+		if r.Code != 0 || r.Message != "" {
+			fmt.Printf("[MFA ERROR] MFA finish failed (code %d): %s\n", r.Code, r.Message)
+			if r.Code == 60008 {
 				fmt.Println("[MFA ERROR] Discord returned 60008 'Password does not match'. Check password in config.json.")
 			}
 			return "err"
 		}
 	}
 
-	fmt.Printf("[MFA ERROR] HTTP Status %d: %s\n", resp.StatusCode(), string(body))
+	fmt.Printf("[MFA ERROR] HTTP Status %d: %s\n", res.StatusCode(), string(raw))
 	return "err"
 }
 
 func runMFAProcess() bool {
-	token := config.GetToken()
-	if token == "" || config.Password == "" {
+	tok := cfg.GetToken()
+	if tok == "" || cfg.Password == "" {
 		fmt.Println("[MFA ERROR] Config invalid or missing. 'token' (or 'discordToken') and 'password' are required in config.json.")
 		return false
 	}
 
-	host := config.GetHost()
-	apiVer := config.GetAPIVersion()
-	guildID := config.GuildID
-	if guildID == "" {
-		guildID = "1539670174221864963"
+	h := cfg.GetHost()
+	ver := cfg.GetAPIVersion()
+	gid := cfg.GuildID
+	if gid == "" {
+		gid = "1539670174221864963"
 	}
 
-	vanityPath := fmt.Sprintf("/api/%s/guilds/%s/vanity-url", apiVer, guildID)
-	fmt.Printf("[MFA] Requesting MFA ticket from https://%s%s...\n", host, vanityPath)
+	p := fmt.Sprintf("/api/%s/guilds/%s/vanity-url", ver, gid)
+	fmt.Printf("[MFA] Requesting MFA ticket from https://%s%s...\n", h, p)
 
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
+	res := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(res)
 
-	req.SetRequestURI(fmt.Sprintf("https://%s%s", host, vanityPath))
+	req.SetRequestURI(fmt.Sprintf("https://%s%s", h, p))
 	req.Header.SetMethod("PATCH")
-	setCommonHeaders(req, token, fmt.Sprintf("/channels/%s", guildID))
+	setCommonHeaders(req, tok, fmt.Sprintf("/channels/%s", gid))
 	req.SetBody([]byte(`{"code":"discord"}`))
 
-	if err := hostClient.Do(req, resp); err != nil {
+	if err := hc.Do(req, res); err != nil {
 		fmt.Printf("[MFA ERROR] Request failed: %v\n", err)
 		return false
 	}
 
-	absorbCookies(resp)
-	respBody := resp.Body()
-	statusCode := resp.StatusCode()
+	absorbCookies(res)
+	raw := res.Body()
+	st := res.StatusCode()
 
 	var v VanityResponse
-	if err := json.Unmarshal(respBody, &v); err != nil {
-		fmt.Printf("[MFA ERROR] Invalid response JSON (status %d): %s\n", statusCode, string(respBody))
+	if err := json.Unmarshal(raw, &v); err != nil {
+		fmt.Printf("[MFA ERROR] Invalid response JSON (status %d): %s\n", st, string(raw))
 		return false
 	}
 
-	ticket := v.MFA.Ticket
-	if ticket == "" {
-		ticket = v.Ticket
+	t := v.MFA.Ticket
+	if t == "" {
+		t = v.Ticket
 	}
 
-	if ticket == "" {
+	if t == "" {
 		switch {
-		case v.Code == 40001 || statusCode == 401:
-			fmt.Printf("[MFA ERROR] Token is invalid or unauthorized (status %d): %s\n", statusCode, string(respBody))
-		case strings.Contains(string(respBody), "GUILD_INVALID_CODE"):
-			fmt.Printf("[MFA INFO] No MFA challenge triggered (status %d GUILD_INVALID_CODE). An MFA session may already be active.\n", statusCode)
+		case v.Code == 40001 || st == 401:
+			fmt.Printf("[MFA ERROR] Token is invalid or unauthorized (status %d): %s\n", st, string(raw))
+		case strings.Contains(string(raw), "GUILD_INVALID_CODE"):
+			fmt.Printf("[MFA INFO] No MFA challenge triggered (status %d GUILD_INVALID_CODE). An MFA session may already be active.\n", st)
 		default:
-			fmt.Printf("[MFA WARNING] No MFA ticket found in response (status %d): %s\n", statusCode, string(respBody))
+			fmt.Printf("[MFA WARNING] No MFA ticket found in response (status %d): %s\n", st, string(raw))
 		}
 		return false
 	}
 
-	fmt.Printf("[MFA] Acquired MFA ticket: %s... Solving with password...\n", ticket[:10])
-	newToken := sendMFA(token, ticket, config.Password)
-	return newToken != "" && newToken != "err"
+	fmt.Printf("[MFA] Acquired MFA ticket: %s... Solving with password...\n", t[:10])
+	newTok := sendMFA(tok, t, cfg.Password)
+	return newTok != "" && newTok != "err"
 }
 
-func containsGuildInvalidCode(body []byte) bool {
-	for i := 0; i <= len(body)-17; i++ {
-		if body[i] == 'G' && string(body[i:i+17]) == "GUILD_INVALID_COD" {
+func containsGuildInvalidCode(b []byte) bool {
+	for i := 0; i <= len(b)-17; i++ {
+		if b[i] == 'G' && string(b[i:i+17]) == "GUILD_INVALID_COD" {
 			return true
 		}
 	}

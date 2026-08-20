@@ -1,58 +1,70 @@
 package main
+
 import (
 	"bufio"
 	"fmt"
 	"os"
 	"strings"
 )
+
 func printCLIHelp() {
 	fmt.Print("\nCommands:\n" +
+		"  sniper <vanity>  start continuous high-speed vanity sniper & locker\n" +
+		"  snipe <vanity>   fire a single manual vanity claim salvo\n" +
 		"  mfa | refresh    force an immediate MFA token solve & refresh\n" +
-		"  snipe <vanity>   fire a manual vanity claim right now\n" +
 		"  status           show current MFA token & engine status\n" +
 		"  config           show active configuration parameters\n" +
 		"  help             show this help menu\n" +
 		"  exit | quit      exit the program\n\n")
 }
+
 func printCLIStatus() {
 	fmt.Println("\n=== MFA Engine Status ===")
-	token := config.GetToken()
-	hasToken := token != ""
-	hasPass := config.Password != ""
-	tokenSnippet := "none"
-	if data, err := os.ReadFile("mfa.txt"); err == nil && len(data) > 16 {
-		s := string(data)
-		tokenSnippet = s[:8] + "..." + s[len(s)-8:]
+	tok := cfg.GetToken()
+	hasTok := tok != ""
+	hasPass := cfg.Password != ""
+	snip := "none"
+	if b, err := os.ReadFile("mfa.txt"); err == nil && len(b) > 16 {
+		s := string(b)
+		snip = s[:8] + "..." + s[len(s)-8:]
 	}
-	fmt.Printf("  Discord Host : %s\n", config.GetHost())
-	fmt.Printf("  API Version  : %s\n", config.GetAPIVersion())
-	fmt.Printf("  Guild ID     : %s\n", config.GuildID)
-	fmt.Printf("  User Token   : %t\n", hasToken)
+	fmt.Printf("  Discord Host : %s\n", cfg.GetHost())
+	fmt.Printf("  API Version  : %s\n", cfg.GetAPIVersion())
+	fmt.Printf("  Guild ID     : %s\n", cfg.GuildID)
+	fmt.Printf("  User Token   : %t\n", hasTok)
 	fmt.Printf("  Password     : %t\n", hasPass)
-	fmt.Printf("  Saved MFA    : %s\n\n", tokenSnippet)
+	fmt.Printf("  Saved MFA    : %s\n\n", snip)
 }
+
 func startInteractiveCLI() {
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Println("\nInteractive CLI Ready. Type 'snipe <vanity>', 'mfa', or 'help' for options.")
+	r := bufio.NewReader(os.Stdin)
+	fmt.Println("\nInteractive CLI Ready. Type 'sniper <vanity>', 'snipe <vanity>', 'mfa', or 'help' for options.")
 	for {
 		fmt.Print("sniper> ")
-		line, err := reader.ReadString('\n')
+		line, err := r.ReadString('\n')
 		if err != nil {
 			break
 		}
-		parts := strings.Fields(strings.TrimSpace(line))
-		if len(parts) == 0 {
+		args := strings.Fields(strings.TrimSpace(line))
+		if len(args) == 0 {
 			continue
 		}
-		cmd := strings.ToLower(parts[0])
+		cmd := strings.ToLower(args[0])
 		switch cmd {
-		case "snipe":
-			vanity := ""
-			if len(parts) > 1 {
-				vanity = parts[1]
+		case "sniper", "locker":
+			v := ""
+			if len(args) > 1 {
+				v = args[1]
 			}
 			loadConfigFile("config.json")
-			executeSnipe(vanity)
+			startContinuousSniper(v)
+		case "snipe":
+			v := ""
+			if len(args) > 1 {
+				v = args[1]
+			}
+			loadConfigFile("config.json")
+			executeSnipe(v)
 		case "mfa", "refresh":
 			if loadConfigFile("config.json") {
 				runMFAProcess()
@@ -63,7 +75,7 @@ func startInteractiveCLI() {
 		case "config":
 			if loadConfigFile("config.json") {
 				fmt.Printf("\nHost: %s, API: %s, GuildID: %s, OS: %s, Browser: %s\n\n",
-					config.GetHost(), config.GetAPIVersion(), config.GuildID, config.OS, config.Browser)
+					cfg.GetHost(), cfg.GetAPIVersion(), cfg.GuildID, cfg.OS, cfg.Browser)
 			}
 		case "help":
 			printCLIHelp()
