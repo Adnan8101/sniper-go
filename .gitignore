@@ -1,0 +1,5 @@
+config.json
+mfa.txt
+node_modules/
+*.exe
+.DS_Store
