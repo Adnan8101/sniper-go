@@ -9,12 +9,14 @@ const B_GU = Buffer.from('"t":"GUILD_UPDATE"');
 const B_VK = Buffer.from('"vanity_url_code":');
 const B_VK_NULL = Buffer.from('"vanity_url_code":null');
 const B_SEQ = Buffer.from('"s":');
+const B_OP11 = Buffer.from('"op":11'); // heartbeat ACK — most frequent msg, skip before JSON.parse
 
 const log = (m) => console.log(`${GREEN}${m}${RESET}`);
 let mfa = "", h2 = null;
 const guilds = new Map();
 let targets = [];
 let config = {};
+let pingIntervalId = null; // tracked for cleanup on H2 reconnect
 
 const loadConfig = () => {
   try {
@@ -65,9 +67,13 @@ const checkSuccess = (res, status) => {
   }
 };
 
+// fireRequest uses closure-local state for timing/logging to avoid concurrent mutation
+// of shared target properties when salvoSize > 1 fires simultaneously.
 const fireRequest = (t) => {
   let sentCount = 0;
   const salvoSize = config.salvoSize || 2;
+  let firstResponseLogged = false; // closure-local: safe under concurrent salvo
+  const fireTime = performance.now();
   for (let i = 0; i < salvoSize; i++) {
     try {
       const req = h2.request(t.headers);
@@ -80,9 +86,9 @@ const fireRequest = (t) => {
         req.setEncoding('utf8');
         req.on('data', c => d += c).on('end', () => {
           if (d) checkSuccess(d.trim(), status);
-          if (status === 200 && t._fireTime && !t._firstResponseLogged) {
-            t._firstResponseLogged = true;
-            const elapsed = performance.now() - t._fireTime;
+          if (status === 200 && !firstResponseLogged) {
+            firstResponseLogged = true;
+            const elapsed = performance.now() - fireTime;
             log('[ ms ] HTTP 200 --> ' + elapsed.toFixed(2) + ' ms');
           }
         });
@@ -124,6 +130,9 @@ const rebuild = () => {
 
 const initH2 = () => {
   if (h2 && !h2.destroyed) h2.destroy();
+  // Clear stale ping interval before reconnecting — without this each reconnect
+  // leaks a new setInterval that accumulates and never gets cleaned up.
+  if (pingIntervalId !== null) { clearInterval(pingIntervalId); pingIntervalId = null; }
   const host = config.discordHost || 'canary.discord.com';
   h2 = http2.connect(`https://${host}`, {
     servername: host,
@@ -137,11 +146,16 @@ const initH2 = () => {
       dummy.on('response', () => {}).on('end', () => {});
       dummy.end();
     } catch {}
+    // Start ping only after connection is live, reading the current config value.
+    pingIntervalId = setInterval(() => {
+      if (h2 && !h2.destroyed) h2.ping(Buffer.alloc(8), () => {});
+    }, config.pingIntervalMs || 15000);
   });
-  h2.on('close', () => setTimeout(initH2, 500));
+  h2.on('close', () => {
+    if (pingIntervalId !== null) { clearInterval(pingIntervalId); pingIntervalId = null; }
+    setTimeout(initH2, 500);
+  });
 };
-
-setInterval(() => { if (h2 && !h2.destroyed) h2.ping(Buffer.alloc(8), () => {}); }, config.pingIntervalMs || 15000);
 
 const initWs = () => {
   const gatewayUrl = config.gatewayUrl || 'wss://gateway.discord.gg/?v=9';
@@ -160,22 +174,19 @@ const initWs = () => {
         if (ne > ns) seq = parseInt(data.toString('utf8', ns, ne), 10);
       }
 
-      let fired = false, ft = null;
+      let ft = null;
       for (let i = 0; i < targets.length; i++) {
         const t = targets[i];
         if (data.indexOf(t.idBuf) !== -1) {
           if (data.indexOf(B_VK) !== -1 && data.indexOf(t.vanBuf) === -1) {
-            t._fireTime = performance.now();
-            t._firstResponseLogged = false;
-            let sentCount = fireRequest(t);
+            const sentCount = fireRequest(t);
             log(`[ * ] PATCH (${sentCount} stream) -> ${t.bodyBuf.toString()}`);
-            fired = true;
             ft = t;
           }
           break;
         }
       }
-      if (fired) {
+      if (ft !== null) {
         setImmediate(() => {
           try {
             const id = ft.guildId, o = guilds.get(id);
@@ -198,6 +209,10 @@ const initWs = () => {
         return;
       }
     }
+
+    // Fast-skip heartbeat ACKs (op:11) before JSON.parse — they are the most
+    // frequent message type and carry no actionable data.
+    if (data.indexOf(B_OP11) !== -1) return;
 
     try {
       const p = JSON.parse(data.toString('utf8'));
@@ -222,21 +237,23 @@ const initWs = () => {
       else if (op === 1) ws.send(`{"op":1,"d":${seq !== null ? seq : 'null'}}`);
       else if (t === 'READY' && d?.guilds) {
         log('WebSocket ready for changes');
-        const v = {};
+        let changed = false;
         for (let i = 0; i < d.guilds.length; i++) {
           const g = d.guilds[i];
-          if (g.vanity_url_code) { guilds.set(g.id, g.vanity_url_code); v[g.id] = g.vanity_url_code; }
+          if (g.vanity_url_code) {
+            guilds.set(g.id, g.vanity_url_code);
+            console.log(ORANGE + g.id + RESET + ' : ' + BLUE + g.vanity_url_code + RESET);
+            changed = true;
+          }
         }
-        if (Object.keys(v).length) { for (const [k,val] of Object.entries(v)) console.log(ORANGE + k + RESET + ' : ' + BLUE + val + RESET); rebuild(); }
+        if (changed) rebuild();
       } else if (t === 'GUILD_UPDATE' && d) {
         const id = d.guild_id || d.id, n = d.vanity_url_code, o = guilds.get(id);
         if (o && o !== n) {
           console.log(ORANGE + id + RESET + ' : ' + BLUE + o + ' -> ' + (n || 'NULL') + RESET);
           const target = targets.find(x => x.guildId === id);
           if (target) {
-            target._fireTime = performance.now();
-            target._firstResponseLogged = false;
-            let sentCount = fireRequest(target);
+            const sentCount = fireRequest(target);
             log(`[ * ] SLOW PATCH (${sentCount} stream) -> ${target.bodyBuf.toString()}`);
           }
         }
