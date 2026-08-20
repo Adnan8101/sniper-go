@@ -1,22 +1,27 @@
 package main
+
 import (
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"time"
+
 	"github.com/valyala/fasthttp"
 )
+
 type MFAPayload struct {
 	Ticket  string `json:"ticket"`
 	MFAType string `json:"mfa_type"`
 	Data    string `json:"data"`
 }
+
 type MFAResponse struct {
 	Token   string `json:"token"`
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 }
+
 type VanityResponse struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
@@ -26,6 +31,7 @@ type VanityResponse struct {
 	} `json:"mfa"`
 	Ticket string `json:"ticket"`
 }
+
 func setCommonHeaders(req *fasthttp.Request, token string, path string) {
 	host := config.GetHost()
 	req.Header.Set("Authorization", token)
@@ -39,6 +45,7 @@ func setCommonHeaders(req *fasthttp.Request, token string, path string) {
 		req.Header.Set("Cookie", ch)
 	}
 }
+
 func writeMFATokenToFile(token string) {
 	cachedMfaToken = token
 	if err := os.WriteFile("mfa.txt", []byte(token), 0644); err != nil {
@@ -52,25 +59,31 @@ func writeMFATokenToFile(token string) {
 	}
 	fmt.Printf("\x1b[32m[MFA - %s] MFA solved via password & saved to mfa.txt: %s\x1b[0m\n", now, display)
 }
+
 func sendMFA(token, ticket, password string) string {
 	payload := MFAPayload{Ticket: ticket, MFAType: "password", Data: password}
 	jsonPayload, _ := json.Marshal(payload)
+
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
+
 	host := config.GetHost()
 	apiVer := config.GetAPIVersion()
 	req.SetRequestURI(fmt.Sprintf("https://%s/api/%s/mfa/finish", host, apiVer))
 	req.Header.SetMethod("POST")
 	setCommonHeaders(req, token, "/login")
 	req.SetBody(jsonPayload)
+
 	if err := hostClient.Do(req, resp); err != nil {
 		fmt.Printf("[MFA ERROR] Failed to send MFA solve request: %v\n", err)
 		return "err"
 	}
+
 	absorbCookies(resp)
 	body := resp.Body()
+
 	var mfaResp MFAResponse
 	if err := json.Unmarshal(body, &mfaResp); err == nil {
 		if mfaResp.Token != "" {
@@ -85,47 +98,58 @@ func sendMFA(token, ticket, password string) string {
 			return "err"
 		}
 	}
+
 	fmt.Printf("[MFA ERROR] HTTP Status %d: %s\n", resp.StatusCode(), string(body))
 	return "err"
 }
+
 func runMFAProcess() bool {
 	token := config.GetToken()
 	if token == "" || config.Password == "" {
 		fmt.Println("[MFA ERROR] Config invalid or missing. 'token' (or 'discordToken') and 'password' are required in config.json.")
 		return false
 	}
+
 	host := config.GetHost()
 	apiVer := config.GetAPIVersion()
 	guildID := config.GuildID
 	if guildID == "" {
 		guildID = "1539670174221864963"
 	}
+
 	vanityPath := fmt.Sprintf("/api/%s/guilds/%s/vanity-url", apiVer, guildID)
 	fmt.Printf("[MFA] Requesting MFA ticket from https://%s%s...\n", host, vanityPath)
+
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
+
 	req.SetRequestURI(fmt.Sprintf("https://%s%s", host, vanityPath))
 	req.Header.SetMethod("PATCH")
 	setCommonHeaders(req, token, fmt.Sprintf("/channels/%s", guildID))
 	req.SetBody([]byte(`{"code":"discord"}`))
+
 	if err := hostClient.Do(req, resp); err != nil {
 		fmt.Printf("[MFA ERROR] Request failed: %v\n", err)
 		return false
 	}
+
 	absorbCookies(resp)
 	respBody := resp.Body()
 	statusCode := resp.StatusCode()
+
 	var v VanityResponse
 	if err := json.Unmarshal(respBody, &v); err != nil {
 		fmt.Printf("[MFA ERROR] Invalid response JSON (status %d): %s\n", statusCode, string(respBody))
 		return false
 	}
+
 	ticket := v.MFA.Ticket
 	if ticket == "" {
 		ticket = v.Ticket
 	}
+
 	if ticket == "" {
 		switch {
 		case v.Code == 40001 || statusCode == 401:
@@ -137,10 +161,12 @@ func runMFAProcess() bool {
 		}
 		return false
 	}
+
 	fmt.Printf("[MFA] Acquired MFA ticket: %s... Solving with password...\n", ticket[:10])
 	newToken := sendMFA(token, ticket, config.Password)
 	return newToken != "" && newToken != "err"
 }
+
 func containsGuildInvalidCode(body []byte) bool {
 	for i := 0; i <= len(body)-17; i++ {
 		if body[i] == 'G' && string(body[i:i+17]) == "GUILD_INVALID_COD" {
