@@ -1,6 +1,10 @@
 package main
 
-import "github.com/valyala/fasthttp"
+import (
+	"sync/atomic"
+
+	"github.com/valyala/fasthttp"
+)
 
 var (
 	cfg         Config
@@ -10,6 +14,11 @@ var (
 )
 
 var (
-	hotMFA    []byte
-	hotCookie []byte
+	hotMFAPtr    atomic.Pointer[[]byte]
+	hotCookiePtr atomic.Pointer[[]byte]
+)
+
+var (
+	dialCount int64
+	fireCount int64
 )

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/valyala/fasthttp"
@@ -26,32 +27,61 @@ type GuildInfo struct {
 	PremiumTier int      `json:"premium_tier"`
 }
 
+// UserGuild is the partial guild object returned by /users/@me/guilds, whose
+// Permissions field is the *caller's* actual permission bitfield for that
+// guild — unlike GET /guilds/{id}, which doesn't return one for this token.
+type UserGuild struct {
+	ID          string `json:"id"`
+	Permissions string `json:"permissions"`
+}
+
+func hasAdminInGuild(gid string) (found, isAdmin bool) {
+	h := cfg.GetHost()
+	ver := cfg.GetAPIVersion()
+	url := fmt.Sprintf("https://%s/api/%s/users/@me/guilds", h, ver)
+
+	st, body, err := doAPIRequest("GET", url, "/channels/@me", cfg.GetToken(), nil)
+	if err != nil || st != 200 {
+		return false, false
+	}
+
+	var guilds []UserGuild
+	if err := json.Unmarshal(body, &guilds); err != nil {
+		return false, false
+	}
+
+	for _, g := range guilds {
+		if g.ID != gid {
+			continue
+		}
+		if g.Permissions == "" {
+			return true, false
+		}
+		val, err := strconv.ParseUint(g.Permissions, 10, 64)
+		if err != nil {
+			return true, false
+		}
+		return true, (val&0x8 != 0) || (val&0x20 != 0)
+	}
+	return false, false
+}
+
 func verifyGuildAndPermissions() bool {
 	gid := cfg.GuildID
 	if gid == "" {
 		gid = "1539670174221864963"
 	}
-	h   := cfg.GetHost()
+	h := cfg.GetHost()
 	ver := cfg.GetAPIVersion()
-	u   := fmt.Sprintf("https://%s/api/%s/guilds/%s", h, ver, gid)
+	u := fmt.Sprintf("https://%s/api/%s/guilds/%s", h, ver, gid)
 
-	req := fasthttp.AcquireRequest()
-	res := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(res)
-
-	req.SetRequestURI(u)
-	req.Header.SetMethod("GET")
-	setCommonHeaders(req, cfg.GetToken(), fmt.Sprintf("/channels/%s", gid))
-
-	if err := hc.Do(req, res); err != nil {
+	st, b, err := doAPIRequest("GET", u, fmt.Sprintf("/channels/%s", gid), cfg.GetToken(), nil)
+	if err != nil {
 		fmt.Printf("\x1b[31m[VERIFY ERROR] Failed to fetch guild details: %v\x1b[0m\n", err)
 		return false
 	}
-
-	b := res.Body()
-	if res.StatusCode() != 200 {
-		fmt.Printf("\x1b[31m[VERIFY ERROR] Guild API returned HTTP %d: %s\x1b[0m\n", res.StatusCode(), string(b))
+	if st != 200 {
+		fmt.Printf("\x1b[31m[VERIFY ERROR] Guild API returned HTTP %d: %s\x1b[0m\n", st, string(b))
 		return false
 	}
 
@@ -61,16 +91,7 @@ func verifyGuildAndPermissions() bool {
 		return false
 	}
 
-	hasAdmin := false
-	if g.Permissions != "" {
-		if val, err := strconv.ParseUint(g.Permissions, 10, 64); err == nil {
-			if (val&0x8 != 0) || (val&0x20 != 0) {
-				hasAdmin = true
-			}
-		}
-	} else {
-		hasAdmin = true
-	}
+	found, hasAdmin := hasAdminInGuild(gid)
 
 	hasVanity := false
 	for _, f := range g.Features {
@@ -81,9 +102,12 @@ func verifyGuildAndPermissions() bool {
 	}
 
 	fmt.Printf("\x1b[36m[VERIFY] Guild: %s (%s)\x1b[0m\n", g.Name, g.ID)
-	if !hasAdmin {
+	switch {
+	case !found:
+		fmt.Println("\x1b[33m[VERIFY WARNING] Could not confirm permissions — guild not found in /users/@me/guilds.\x1b[0m")
+	case !hasAdmin:
 		fmt.Println("\x1b[33m[VERIFY WARNING] Account permission check: Administrator/Manage Guild bit missing!\x1b[0m")
-	} else {
+	default:
 		fmt.Println("\x1b[32m[VERIFY PASS] Admin permissions confirmed.\x1b[0m")
 	}
 
@@ -96,16 +120,51 @@ func verifyGuildAndPermissions() bool {
 	return true
 }
 
+func fireOne(req *fasthttp.Request, res *fasthttp.Response) snipeResult {
+	atomic.AddInt64(&fireCount, 1)
+	t0 := time.Now()
+	err := hc.Do(req, res)
+	ms := float64(time.Since(t0).Microseconds()) / 1000.0
+	return snipeResult{
+		statusCode: res.StatusCode(),
+		body:       string(res.Body()),
+		elapsedMs:  ms,
+		err:        err,
+	}
+}
+
+// pickSalvoResult picks the winner out of a salvo: any response that actually
+// claimed or already owns the vanity wins, even if it wasn't the first to
+// finish. Only if none succeeded do we fall back to the fastest result, since
+// that's the most representative one for logging/backoff decisions.
+func pickSalvoResult(results []snipeResult) snipeResult {
+	for _, r := range results {
+		if r.err != nil {
+			continue
+		}
+		if r.statusCode == 200 || (r.statusCode == 400 && strings.Contains(r.body, "50020")) {
+			return r
+		}
+	}
+	best := results[0]
+	for _, r := range results[1:] {
+		if r.elapsedMs < best.elapsedMs {
+			best = r
+		}
+	}
+	return best
+}
+
 func executeSnipeSalvo(code string) snipeResult {
-	body   := buildBody(code)
-	mfa    := hotMFA
-	cookie := hotCookie
-	n      := cfg.SalvoSize
+	body := buildBody(code)
+	mfa := currentMFA()
+	cookie := currentCookie()
+	n := cfg.SalvoSize
 	if n <= 0 {
 		n = 2
 	}
-	ch    := make(chan snipeResult, n)
-	reqs  := make([]*fasthttp.Request, n)
+
+	reqs := make([]*fasthttp.Request, n)
 	resps := make([]*fasthttp.Response, n)
 	for i := 0; i < n; i++ {
 		req := fasthttp.AcquireRequest()
@@ -125,35 +184,31 @@ func executeSnipeSalvo(code string) snipeResult {
 			req.Header.SetBytesKV(kCookie, cookie)
 		}
 		req.SetBody(body)
-		reqs[i]  = req
+		reqs[i] = req
 		resps[i] = fasthttp.AcquireResponse()
 	}
+
+	results := make([]snipeResult, n)
 	var wg sync.WaitGroup
 	wg.Add(n)
 	for i := 0; i < n; i++ {
 		idx := i
 		go func() {
 			defer wg.Done()
-			t0  := time.Now()
-			err := hc.Do(reqs[idx], resps[idx])
-			ms  := float64(time.Since(t0).Microseconds()) / 1000.0
-			ch <- snipeResult{
-				statusCode: resps[idx].StatusCode(),
-				body:       string(resps[idx].Body()),
-				elapsedMs:  ms,
-				err:        err,
-			}
+			results[idx] = fireOne(reqs[idx], resps[idx])
 		}()
 	}
-	go func() {
-		wg.Wait()
-		for i := 0; i < n; i++ {
-			fasthttp.ReleaseRequest(reqs[i])
-			fasthttp.ReleaseResponse(resps[i])
-		}
-		preWarmConns(n)
-	}()
-	return <-ch
+	wg.Wait()
+
+	for i := 0; i < n; i++ {
+		fasthttp.ReleaseRequest(reqs[i])
+		fasthttp.ReleaseResponse(resps[i])
+	}
+
+	// fasthttp already returns these connections to HostClient's own idle
+	// pool once each Do() completes — no need to force-dial replacements
+	// here, that would just double the handshake work on every shot.
+	return pickSalvoResult(results)
 }
 
 func executeSnipe(code string) {
@@ -211,7 +266,7 @@ func startContinuousSniper(code string) {
 			fmt.Printf("\n\x1b[32m🎉 SUCCESS! Vanity '%s' successfully claimed for your server!\x1b[0m\n", code)
 			break
 		}
-		if res.statusCode == 400 && containsCode(res.body, "50020") {
+		if res.statusCode == 400 && strings.Contains(res.body, "50020") {
 			fmt.Printf("\n\x1b[32m✅ Vanity '%s' is already owned by this server!\x1b[0m\n", code)
 			break
 		}
@@ -245,9 +300,9 @@ func logSnipeResult(code string, res snipeResult) {
 		fmt.Printf("\x1b[32m[ CLAIMED ] %s — HTTP 200 | %.2fms\x1b[0m\n", code, res.elapsedMs)
 	case 400:
 		switch {
-		case containsCode(res.body, "50020"):
+		case strings.Contains(res.body, "50020"):
 			fmt.Printf("\x1b[33m[ TAKEN ] %s — code already owned (50020) | %.2fms\x1b[0m\n", code, res.elapsedMs)
-		case containsCode(res.body, "50024"):
+		case strings.Contains(res.body, "50024"):
 			fmt.Printf("\x1b[33m[ INVALID ] %s — invalid code format (50024) | %.2fms\x1b[0m\n", code, res.elapsedMs)
 		default:
 			fmt.Printf("\x1b[31m[ FAIL 400 ] %s | %.2fms — %s\x1b[0m\n", code, res.elapsedMs, res.body)
@@ -269,7 +324,7 @@ func parseRetryAfterSec(s string) float64 {
 		return 0
 	}
 	start := i + len(`"retry_after":`)
-	end   := start
+	end := start
 	for end < len(s) && (s[end] >= '0' && s[end] <= '9' || s[end] == '.') {
 		end++
 	}
@@ -287,13 +342,13 @@ func formatRetryAfter(s string) string {
 		return "N/A"
 	}
 	start := i + len(`"retry_after":`)
-	end   := start
+	end := start
 	for end < len(s) && (s[end] >= '0' && s[end] <= '9' || s[end] == '.') {
 		end++
 	}
 	if end > start {
 		if sec, err := strconv.ParseFloat(s[start:end], 64); err == nil {
-			hrs  := sec / 3600.0
+			hrs := sec / 3600.0
 			mins := sec / 60.0
 			if hrs >= 1.0 {
 				return fmt.Sprintf("%.2f hours (%.0fs)", hrs, sec)
@@ -305,13 +360,4 @@ func formatRetryAfter(s string) string {
 		}
 	}
 	return "N/A"
-}
-
-func containsCode(s, code string) bool {
-	for i := 0; i <= len(s)-len(code); i++ {
-		if s[i:i+len(code)] == code {
-			return true
-		}
-	}
-	return false
 }

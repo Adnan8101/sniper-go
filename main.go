@@ -10,6 +10,7 @@ import (
 
 func main() {
 	debug.SetGCPercent(400)
+	debug.SetMemoryLimit(256 << 20) // soft cap so a long --loop run can't grow the heap unbounded
 
 	loop   := flag.Bool("loop", false, "")
 	cli    := flag.Bool("cli", false, "")

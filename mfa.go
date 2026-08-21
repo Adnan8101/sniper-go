@@ -46,10 +46,42 @@ func setCommonHeaders(req *fasthttp.Request, tok, p string) {
 	}
 }
 
+func doAPIRequest(method, url, referrerPath, tok string, body []byte) (status int, respBody []byte, err error) {
+	req := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(req)
+	res := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(res)
+
+	req.SetRequestURI(url)
+	req.Header.SetMethod(method)
+	setCommonHeaders(req, tok, referrerPath)
+	if body != nil {
+		req.SetBody(body)
+	}
+
+	if err := hc.Do(req, res); err != nil {
+		return 0, nil, err
+	}
+
+	absorbCookies(res)
+	flushCookieCache()
+
+	return res.StatusCode(), append([]byte(nil), res.Body()...), nil
+}
+
+// currentMFA returns the cached MFA token set by the most recent solve/reload.
+func currentMFA() []byte {
+	if p := hotMFAPtr.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
 func writeMFATokenToFile(tok string) {
 	cachedMFA = tok
-	hotMFA = []byte(tok)
-	if err := os.WriteFile("mfa.txt", []byte(tok), 0644); err != nil {
+	b := []byte(tok)
+	hotMFAPtr.Store(&b)
+	if err := os.WriteFile("mfa.txt", b, 0600); err != nil {
 		fmt.Println("[MFA ERROR] Failed to write MFA token to file:", err)
 		return
 	}
@@ -64,26 +96,15 @@ func writeMFATokenToFile(tok string) {
 func sendMFA(tok, ticket, pass string) string {
 	b, _ := json.Marshal(MFAPayload{Ticket: ticket, MFAType: "password", Data: pass})
 
-	req := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(req)
-	res := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(res)
-
-	h   := cfg.GetHost()
+	h := cfg.GetHost()
 	ver := cfg.GetAPIVersion()
-	req.SetRequestURI(fmt.Sprintf("https://%s/api/%s/mfa/finish", h, ver))
-	req.Header.SetMethod("POST")
-	setCommonHeaders(req, tok, "/login")
-	req.SetBody(b)
+	url := fmt.Sprintf("https://%s/api/%s/mfa/finish", h, ver)
 
-	if err := hc.Do(req, res); err != nil {
+	st, raw, err := doAPIRequest("POST", url, "/login", tok, b)
+	if err != nil {
 		fmt.Printf("[MFA ERROR] Failed to send MFA solve request: %v\n", err)
 		return "err"
 	}
-
-	absorbCookies(res)
-	flushCookieCache()
-	raw := res.Body()
 
 	var r MFAResponse
 	if err := json.Unmarshal(raw, &r); err == nil {
@@ -100,7 +121,7 @@ func sendMFA(tok, ticket, pass string) string {
 		}
 	}
 
-	fmt.Printf("[MFA ERROR] HTTP Status %d: %s\n", res.StatusCode(), string(raw))
+	fmt.Printf("[MFA ERROR] HTTP Status %d: %s\n", st, string(raw))
 	return "err"
 }
 
@@ -111,7 +132,7 @@ func runMFAProcess() bool {
 		return false
 	}
 
-	h   := cfg.GetHost()
+	h := cfg.GetHost()
 	ver := cfg.GetAPIVersion()
 	gid := cfg.GuildID
 	if gid == "" {
@@ -121,25 +142,12 @@ func runMFAProcess() bool {
 	p := fmt.Sprintf("/api/%s/guilds/%s/vanity-url", ver, gid)
 	fmt.Printf("[MFA] Requesting MFA ticket from https://%s%s...\n", h, p)
 
-	req := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(req)
-	res := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(res)
-
-	req.SetRequestURI(fmt.Sprintf("https://%s%s", h, p))
-	req.Header.SetMethod("PATCH")
-	setCommonHeaders(req, tok, fmt.Sprintf("/channels/%s", gid))
-	req.SetBody([]byte(`{"code":"discord"}`))
-
-	if err := hc.Do(req, res); err != nil {
+	st, raw, err := doAPIRequest("PATCH", fmt.Sprintf("https://%s%s", h, p),
+		fmt.Sprintf("/channels/%s", gid), tok, []byte(`{"code":"discord"}`))
+	if err != nil {
 		fmt.Printf("[MFA ERROR] Request failed: %v\n", err)
 		return false
 	}
-
-	absorbCookies(res)
-	flushCookieCache()
-	raw := res.Body()
-	st  := res.StatusCode()
 
 	var v VanityResponse
 	if err := json.Unmarshal(raw, &v); err != nil {
@@ -167,13 +175,4 @@ func runMFAProcess() bool {
 	fmt.Printf("[MFA] Acquired MFA ticket: %s... Solving with password...\n", t[:10])
 	newTok := sendMFA(tok, t, cfg.Password)
 	return newTok != "" && newTok != "err"
-}
-
-func containsGuildInvalidCode(b []byte) bool {
-	for i := 0; i <= len(b)-17; i++ {
-		if b[i] == 'G' && string(b[i:i+17]) == "GUILD_INVALID_COD" {
-			return true
-		}
-	}
-	return false
 }

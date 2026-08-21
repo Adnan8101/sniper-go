@@ -92,10 +92,15 @@ func loadConfigFile(fn string) bool {
 		fmt.Printf("[MFA ERROR] Failed to read %s: %v\n", fn, err)
 		return false
 	}
-	if err := json.Unmarshal(b, &cfg); err != nil {
+	var next Config
+	if err := json.Unmarshal(b, &next); err != nil {
 		fmt.Printf("[MFA ERROR] Failed to parse %s: %v\n", fn, err)
 		return false
 	}
+	// Only commit once decoding fully succeeds — json.Unmarshal populates
+	// fields incrementally, so decoding straight into the live cfg could
+	// leave it half old / half new on a partial parse failure.
+	cfg = next
 	cachedProps = ""
 	loadCachedMfaToken()
 	rebuildHotCache()
@@ -105,6 +110,7 @@ func loadConfigFile(fn string) bool {
 func loadCachedMfaToken() {
 	if b, err := os.ReadFile("mfa.txt"); err == nil && len(b) > 0 {
 		cachedMFA = strings.TrimSpace(string(b))
-		hotMFA    = []byte(cachedMFA)
+		tok := []byte(cachedMFA)
+		hotMFAPtr.Store(&tok)
 	}
 }

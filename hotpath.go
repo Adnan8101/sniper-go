@@ -5,10 +5,18 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/valyala/fasthttp"
 )
+
+// maxIdleConnDuration bounds how long fasthttp keeps an idle connection alive
+// before its connsCleaner closes it. Left at the zero value this defaults to
+// fasthttp.DefaultMaxIdleConnDuration (10s) — shorter than any reasonable gap
+// between snipe attempts, which silently emptied the warm pool. Set explicitly
+// so the keep-alive ticker in client.go has a real window to refill against.
+const maxIdleConnDuration = 120 * time.Second
 
 var (
 	hotURL, hotRef, hotOrigin, hotTok, hotProp, hotUA []byte
@@ -30,13 +38,6 @@ var (
 	vCT     = []byte("application/json")
 	vAE     = []byte("identity")
 )
-
-var bodyPool = sync.Pool{
-	New: func() any {
-		b := make([]byte, 0, 32)
-		return &b
-	},
-}
 
 func buildBody(code string) []byte {
 	prefix := `{"code":"`
@@ -82,6 +83,7 @@ func initHostClient(h string) {
 	}
 
 	dial := func(a string) (net.Conn, error) {
+		t0 := time.Now()
 		d := &net.Dialer{
 			Timeout:   3 * time.Second,
 			KeepAlive: 30 * time.Second,
@@ -95,6 +97,12 @@ func initHostClient(h string) {
 			_ = tc.SetKeepAlive(true)
 			_ = tc.SetKeepAlivePeriod(30 * time.Second)
 		}
+		// Every occurrence here means fasthttp's pool had no warm connection to
+		// reuse and a request is about to pay for a fresh TCP+TLS handshake.
+		// Should be rare (startup only) once the pool is kept warm correctly.
+		n := atomic.AddInt64(&dialCount, 1)
+		fmt.Printf("\x1b[90m[NET] cold TCP connect to %s in %.2fms (dial #%d, TLS handshake follows)\x1b[0m\n",
+			a, time.Since(t0).Seconds()*1000, n)
 		return c, nil
 	}
 
@@ -104,7 +112,7 @@ func initHostClient(h string) {
 		TLSConfig:                     tlscfg,
 		Dial:                          dial,
 		MaxConns:                      2000,
-		MaxIdleConnDuration:           0,
+		MaxIdleConnDuration:           maxIdleConnDuration,
 		ReadTimeout:                   5 * time.Second,
 		WriteTimeout:                  5 * time.Second,
 		MaxResponseBodySize:           64 * 1024,

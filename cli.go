@@ -56,15 +56,17 @@ func startInteractiveCLI() {
 			if len(args) > 1 {
 				v = args[1]
 			}
-			loadConfigFile("config.json")
-			startContinuousSniper(v)
+			if loadConfigFile("config.json") {
+				startContinuousSniper(v)
+			}
 		case "snipe":
 			v := ""
 			if len(args) > 1 {
 				v = args[1]
 			}
-			loadConfigFile("config.json")
-			executeSnipe(v)
+			if loadConfigFile("config.json") {
+				executeSnipe(v)
+			}
 		case "mfa", "refresh":
 			if loadConfigFile("config.json") {
 				runMFAProcess()

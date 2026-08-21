@@ -36,7 +36,8 @@ func flushCookieCache() {
 		return
 	}
 	if len(jar) == 0 {
-		hotCookie = hotCookie[:0]
+		empty := []byte{}
+		hotCookiePtr.Store(&empty)
 		cookieDirty = false
 		return
 	}
@@ -51,26 +52,19 @@ func flushCookieCache() {
 		b.WriteString(v)
 		first = false
 	}
-	hotCookie = []byte(b.String())
+	built := []byte(b.String())
+	hotCookiePtr.Store(&built)
 	cookieDirty = false
 }
 
+// currentCookie returns the cached cookie header built by flushCookieCache.
+func currentCookie() []byte {
+	if p := hotCookiePtr.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
 func getCookieHeader() string {
-	cmu.Lock()
-	defer cmu.Unlock()
-	if len(jar) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	first := true
-	for k, v := range jar {
-		if !first {
-			b.WriteString("; ")
-		}
-		b.WriteString(k)
-		b.WriteByte('=')
-		b.WriteString(v)
-		first = false
-	}
-	return b.String()
+	return string(currentCookie())
 }
