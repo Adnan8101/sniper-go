@@ -1,7 +1,6 @@
 package main
 
 import (
-	"runtime"
 	"time"
 )
 
@@ -12,10 +11,9 @@ func startConnectionKeepAlive() {
 	}
 	preWarmConns(n)
 	go func() {
-		tk := time.NewTicker(3 * time.Second)
+		tk := time.NewTicker(30 * time.Second)
 		for range tk.C {
 			preWarmConns(1)
-			runtime.GC()
 		}
 	}()
 }

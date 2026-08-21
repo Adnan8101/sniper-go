@@ -31,9 +31,9 @@ func verifyGuildAndPermissions() bool {
 	if gid == "" {
 		gid = "1539670174221864963"
 	}
-	h := cfg.GetHost()
+	h   := cfg.GetHost()
 	ver := cfg.GetAPIVersion()
-	u := fmt.Sprintf("https://%s/api/%s/guilds/%s", h, ver, gid)
+	u   := fmt.Sprintf("https://%s/api/%s/guilds/%s", h, ver, gid)
 
 	req := fasthttp.AcquireRequest()
 	res := fasthttp.AcquireResponse()
@@ -97,15 +97,15 @@ func verifyGuildAndPermissions() bool {
 }
 
 func executeSnipeSalvo(code string) snipeResult {
-	body := buildBody(code)
-	mfa := []byte(cachedMFA)
-	cookie := []byte(getCookieHeader())
-	n := cfg.SalvoSize
+	body   := buildBody(code)
+	mfa    := hotMFA
+	cookie := hotCookie
+	n      := cfg.SalvoSize
 	if n <= 0 {
 		n = 2
 	}
-	ch := make(chan snipeResult, n)
-	reqs := make([]*fasthttp.Request, n)
+	ch    := make(chan snipeResult, n)
+	reqs  := make([]*fasthttp.Request, n)
 	resps := make([]*fasthttp.Response, n)
 	for i := 0; i < n; i++ {
 		req := fasthttp.AcquireRequest()
@@ -125,7 +125,7 @@ func executeSnipeSalvo(code string) snipeResult {
 			req.Header.SetBytesKV(kCookie, cookie)
 		}
 		req.SetBody(body)
-		reqs[i] = req
+		reqs[i]  = req
 		resps[i] = fasthttp.AcquireResponse()
 	}
 	var wg sync.WaitGroup
@@ -134,9 +134,9 @@ func executeSnipeSalvo(code string) snipeResult {
 		idx := i
 		go func() {
 			defer wg.Done()
-			t0 := time.Now()
+			t0  := time.Now()
 			err := hc.Do(reqs[idx], resps[idx])
-			ms := float64(time.Since(t0).Microseconds()) / 1000.0
+			ms  := float64(time.Since(t0).Microseconds()) / 1000.0
 			ch <- snipeResult{
 				statusCode: resps[idx].StatusCode(),
 				body:       string(resps[idx].Body()),
@@ -269,7 +269,7 @@ func parseRetryAfterSec(s string) float64 {
 		return 0
 	}
 	start := i + len(`"retry_after":`)
-	end := start
+	end   := start
 	for end < len(s) && (s[end] >= '0' && s[end] <= '9' || s[end] == '.') {
 		end++
 	}
@@ -287,13 +287,13 @@ func formatRetryAfter(s string) string {
 		return "N/A"
 	}
 	start := i + len(`"retry_after":`)
-	end := start
+	end   := start
 	for end < len(s) && (s[end] >= '0' && s[end] <= '9' || s[end] == '.') {
 		end++
 	}
 	if end > start {
 		if sec, err := strconv.ParseFloat(s[start:end], 64); err == nil {
-			hrs := sec / 3600.0
+			hrs  := sec / 3600.0
 			mins := sec / 60.0
 			if hrs >= 1.0 {
 				return fmt.Sprintf("%.2f hours (%.0fs)", hrs, sec)

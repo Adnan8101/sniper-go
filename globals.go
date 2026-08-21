@@ -8,3 +8,8 @@ var (
 	cachedMFA   string
 	hc          *fasthttp.HostClient
 )
+
+var (
+	hotMFA    []byte
+	hotCookie []byte
+)

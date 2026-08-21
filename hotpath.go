@@ -13,6 +13,7 @@ import (
 var (
 	hotURL, hotRef, hotOrigin, hotTok, hotProp, hotUA []byte
 	hotAddr                                           string
+	warmURL                                           []byte
 )
 
 var (
@@ -30,24 +31,38 @@ var (
 	vAE     = []byte("identity")
 )
 
+var bodyPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 32)
+		return &b
+	},
+}
+
 func buildBody(code string) []byte {
-	return []byte(`{"code":"` + code + `"}`)
+	prefix := `{"code":"`
+	suffix := `"}`
+	buf := make([]byte, 0, len(prefix)+len(code)+len(suffix))
+	buf = append(buf, prefix...)
+	buf = append(buf, code...)
+	buf = append(buf, suffix...)
+	return buf
 }
 
 func rebuildHotCache() {
-	h := cfg.GetHost()
+	h   := cfg.GetHost()
 	ver := cfg.GetAPIVersion()
 	gid := cfg.GuildID
 	if gid == "" {
 		gid = "1539670174221864963"
 	}
 
-	hotURL = []byte(fmt.Sprintf("https://%s/api/%s/guilds/%s/vanity-url", h, ver, gid))
-	hotRef = []byte(fmt.Sprintf("https://%s/channels/%s", h, gid))
+	hotURL    = []byte(fmt.Sprintf("https://%s/api/%s/guilds/%s/vanity-url", h, ver, gid))
+	hotRef    = []byte(fmt.Sprintf("https://%s/channels/%s", h, gid))
 	hotOrigin = []byte("https://" + h)
-	hotTok = []byte(cfg.GetToken())
-	hotProp = []byte(cfg.BuildSuperProperties())
-	hotUA = []byte(cfg.UserAgent())
+	hotTok    = []byte(cfg.GetToken())
+	hotProp   = []byte(cfg.BuildSuperProperties())
+	hotUA     = []byte(cfg.UserAgent())
+	warmURL   = []byte(fmt.Sprintf("https://%s/api/v9/gateway", h))
 
 	initHostClient(h)
 }
@@ -59,7 +74,7 @@ func initHostClient(h string) {
 	}
 	hotAddr = addr
 
-	tcfg := &tls.Config{
+	tlscfg := &tls.Config{
 		ClientSessionCache: tls.NewLRUClientSessionCache(1000),
 		NextProtos:         []string{"http/1.1"},
 		MinVersion:         tls.VersionTLS13,
@@ -68,8 +83,8 @@ func initHostClient(h string) {
 
 	dial := func(a string) (net.Conn, error) {
 		d := &net.Dialer{
-			Timeout:   2 * time.Second,
-			KeepAlive: 15 * time.Second,
+			Timeout:   3 * time.Second,
+			KeepAlive: 30 * time.Second,
 		}
 		c, err := d.Dial("tcp", a)
 		if err != nil {
@@ -78,9 +93,7 @@ func initHostClient(h string) {
 		if tc, ok := c.(*net.TCPConn); ok {
 			_ = tc.SetNoDelay(true)
 			_ = tc.SetKeepAlive(true)
-			_ = tc.SetKeepAlivePeriod(15 * time.Second)
-			_ = tc.SetReadBuffer(256 * 1024)
-			_ = tc.SetWriteBuffer(256 * 1024)
+			_ = tc.SetKeepAlivePeriod(30 * time.Second)
 		}
 		return c, nil
 	}
@@ -88,13 +101,13 @@ func initHostClient(h string) {
 	hc = &fasthttp.HostClient{
 		Addr:                          addr,
 		IsTLS:                         true,
-		TLSConfig:                     tcfg,
+		TLSConfig:                     tlscfg,
 		Dial:                          dial,
 		MaxConns:                      2000,
-		MaxIdleConnDuration:           1200 * time.Second,
-		ReadTimeout:                   2 * time.Second,
-		WriteTimeout:                  2 * time.Second,
-		MaxResponseBodySize:           256 * 1024,
+		MaxIdleConnDuration:           0,
+		ReadTimeout:                   5 * time.Second,
+		WriteTimeout:                  5 * time.Second,
+		MaxResponseBodySize:           64 * 1024,
 		DisableHeaderNamesNormalizing: true,
 	}
 }
@@ -121,7 +134,7 @@ func warmWithHostClient() {
 	defer fasthttp.ReleaseResponse(res)
 
 	req.Header.SetMethodBytes([]byte("GET"))
-	req.SetRequestURI(fmt.Sprintf("https://%s/api/v9/gateway", cfg.GetHost()))
+	req.SetRequestURIBytes(warmURL)
 	_ = hc.Do(req, res)
 	res.ResetBody()
 }

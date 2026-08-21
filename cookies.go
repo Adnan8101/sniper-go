@@ -8,8 +8,9 @@ import (
 )
 
 var (
-	cmu sync.Mutex
-	jar = make(map[string]string)
+	cmu         sync.Mutex
+	jar         = make(map[string]string)
+	cookieDirty = true
 )
 
 func absorbCookies(res *fasthttp.Response) {
@@ -23,8 +24,35 @@ func absorbCookies(res *fasthttp.Response) {
 		fasthttp.ReleaseCookie(c)
 		if key != "" {
 			jar[key] = val
+			cookieDirty = true
 		}
 	})
+}
+
+func flushCookieCache() {
+	cmu.Lock()
+	defer cmu.Unlock()
+	if !cookieDirty {
+		return
+	}
+	if len(jar) == 0 {
+		hotCookie = hotCookie[:0]
+		cookieDirty = false
+		return
+	}
+	var b strings.Builder
+	first := true
+	for k, v := range jar {
+		if !first {
+			b.WriteString("; ")
+		}
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(v)
+		first = false
+	}
+	hotCookie = []byte(b.String())
+	cookieDirty = false
 }
 
 func getCookieHeader() string {

@@ -34,11 +34,11 @@ type VanityResponse struct {
 
 func setCommonHeaders(req *fasthttp.Request, tok, p string) {
 	h := cfg.GetHost()
-	req.Header.Set("Authorization", tok)
-	req.Header.Set("User-Agent", cfg.UserAgent())
-	req.Header.Set("X-Super-Properties", cfg.BuildSuperProperties())
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept-Encoding", "identity")
+	req.Header.SetBytesK(kAuth, tok)
+	req.Header.SetBytesKV(kUA, hotUA)
+	req.Header.SetBytesKV(kProps, hotProp)
+	req.Header.SetBytesKV(kCT, vCT)
+	req.Header.SetBytesKV(kAE, vAE)
 	req.Header.Set("Origin", "https://"+h)
 	req.Header.Set("Referer", "https://"+h+p)
 	if s := getCookieHeader(); s != "" {
@@ -48,6 +48,7 @@ func setCommonHeaders(req *fasthttp.Request, tok, p string) {
 
 func writeMFATokenToFile(tok string) {
 	cachedMFA = tok
+	hotMFA = []byte(tok)
 	if err := os.WriteFile("mfa.txt", []byte(tok), 0644); err != nil {
 		fmt.Println("[MFA ERROR] Failed to write MFA token to file:", err)
 		return
@@ -68,7 +69,7 @@ func sendMFA(tok, ticket, pass string) string {
 	res := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(res)
 
-	h := cfg.GetHost()
+	h   := cfg.GetHost()
 	ver := cfg.GetAPIVersion()
 	req.SetRequestURI(fmt.Sprintf("https://%s/api/%s/mfa/finish", h, ver))
 	req.Header.SetMethod("POST")
@@ -81,6 +82,7 @@ func sendMFA(tok, ticket, pass string) string {
 	}
 
 	absorbCookies(res)
+	flushCookieCache()
 	raw := res.Body()
 
 	var r MFAResponse
@@ -109,7 +111,7 @@ func runMFAProcess() bool {
 		return false
 	}
 
-	h := cfg.GetHost()
+	h   := cfg.GetHost()
 	ver := cfg.GetAPIVersion()
 	gid := cfg.GuildID
 	if gid == "" {
@@ -135,8 +137,9 @@ func runMFAProcess() bool {
 	}
 
 	absorbCookies(res)
+	flushCookieCache()
 	raw := res.Body()
-	st := res.StatusCode()
+	st  := res.StatusCode()
 
 	var v VanityResponse
 	if err := json.Unmarshal(raw, &v); err != nil {

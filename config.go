@@ -81,7 +81,7 @@ func (c *Config) BuildSuperProperties() string {
 		"client_event_source":      nil,
 		"has_client_mods":          false,
 	}
-	b, _ := json.Marshal(m)
+	b, _       := json.Marshal(m)
 	cachedProps = base64.StdEncoding.EncodeToString(b)
 	return cachedProps
 }
@@ -105,5 +105,6 @@ func loadConfigFile(fn string) bool {
 func loadCachedMfaToken() {
 	if b, err := os.ReadFile("mfa.txt"); err == nil && len(b) > 0 {
 		cachedMFA = strings.TrimSpace(string(b))
+		hotMFA    = []byte(cachedMFA)
 	}
 }

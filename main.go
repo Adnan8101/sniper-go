@@ -4,15 +4,18 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"time"
 )
 
 func main() {
-	loop := flag.Bool("loop", false, "Run in background loop mode continuously")
-	cli := flag.Bool("cli", false, "Run in interactive CLI mode")
-	target := flag.String("sniper", "", "Start continuous high-speed vanity sniper & locker for target vanity")
-	intv := flag.Duration("interval", 4*time.Minute, "Refresh interval for loop mode (e.g. 4m, 30s)")
-	cfgFile := flag.String("config", "config.json", "Path to config file")
+	debug.SetGCPercent(400)
+
+	loop   := flag.Bool("loop", false, "")
+	cli    := flag.Bool("cli", false, "")
+	target := flag.String("sniper", "", "")
+	intv   := flag.Duration("interval", 4*time.Minute, "")
+	cfgFile := flag.String("config", "config.json", "")
 	flag.Parse()
 
 	fmt.Println("==========================================")
